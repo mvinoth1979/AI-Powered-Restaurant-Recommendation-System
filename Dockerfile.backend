@@ -1,0 +1,29 @@
+# ─── Backend — FastAPI ────────────────────────────────────────────────────────
+FROM python:3.11-slim AS backend
+
+WORKDIR /app
+
+# System dependencies (needed by pandas/numpy)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies first (layer cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt uvicorn fastapi groq
+
+# Copy source code and dataset
+COPY src/ ./src/
+COPY data/processed/processed_zomato.csv ./data/processed/processed_zomato.csv
+
+# Non-root user for security
+RUN useradd -m appuser && chown -R appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# Health-check so docker-compose / Render can verify readiness
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/api/locations || exit 1
+
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

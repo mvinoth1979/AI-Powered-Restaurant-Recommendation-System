@@ -1,0 +1,12 @@
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.env
+.git
+.gitignore
+*.md
+tests/
+launcher.py
+Docs/
+frontend/node_modules
+frontend/.next
