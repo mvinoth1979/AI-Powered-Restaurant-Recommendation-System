@@ -103,22 +103,102 @@ h1, h2, h3 { font-family: 'Plus Jakarta Sans', sans-serif !important; }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Data Loading (cached — runs once per session, survives reruns)
+# Auto-downloads from Hugging Face if CSV is absent (Streamlit Cloud case)
 # ═══════════════════════════════════════════════════════════════════════════════
 DATA_PATH = os.path.join(ROOT, "data", "processed", "processed_zomato.csv")
 
+HF_CSV_URL = (
+    "https://huggingface.co/datasets/ManikaSaini/zomato-restaurant-recommendation"
+    "/resolve/main/data/train-00000-of-00001.parquet"
+)
+
+def _ensure_dataset_exists():
+    """
+    Download the processed Zomato CSV from Hugging Face if it isn't on disk.
+    Called OUTSIDE @st.cache_data so that st.spinner / st.error work correctly.
+    Returns True on success, False on failure.
+    """
+    if os.path.exists(DATA_PATH):
+        return True  # already present
+
+    os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
+
+    # ── Try the Hugging Face `datasets` library first ─────────────────────────
+    with st.spinner(
+        "📥 First run — downloading dataset from Hugging Face. "
+        "This takes 1–3 minutes and won't repeat…"
+    ):
+        try:
+            try:
+                from datasets import load_dataset
+            except ImportError:
+                import subprocess
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "datasets"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                from datasets import load_dataset
+
+            dataset = load_dataset(
+                "ManikaSaini/zomato-restaurant-recommendation",
+                trust_remote_code=True,
+            )
+            df = dataset["train"].to_pandas()
+            df.columns = [c.strip() for c in df.columns]
+            df.to_csv(DATA_PATH, index=False)
+            return True
+
+        except Exception as primary_err:
+            # ── Fallback: direct HTTP download of the parquet ──────────────
+            try:
+                import urllib.request
+                import io
+
+                st.info("Primary download path failed — trying direct download…")
+                tmp_parquet = DATA_PATH.replace(".csv", "_tmp.parquet")
+                urllib.request.urlretrieve(HF_CSV_URL, tmp_parquet)
+
+                df = pd.read_parquet(tmp_parquet)
+                df.columns = [c.strip() for c in df.columns]
+                df.to_csv(DATA_PATH, index=False)
+
+                try:
+                    os.remove(tmp_parquet)
+                except OSError:
+                    pass
+
+                return True
+
+            except Exception as fallback_err:
+                st.error(
+                    f"❌ Could not download the dataset.\n\n"
+                    f"Primary error: `{primary_err}`\n\n"
+                    f"Fallback error: `{fallback_err}`\n\n"
+                    "Please check your internet connection or re-deploy after running "
+                    "`python scripts/download_data.py` locally and committing the CSV "
+                    "via Git LFS."
+                )
+                return False
+
 @st.cache_data(show_spinner="Loading restaurant database…")
 def load_data() -> pd.DataFrame:
+    """Read the CSV from disk and pre-clean numeric columns."""
     if not os.path.exists(DATA_PATH):
+        # Should never reach here — _ensure_dataset_exists() is called first
         return pd.DataFrame()
+
     df = pd.read_csv(DATA_PATH, low_memory=False)
+
     # Pre-clean numeric columns once so filtering is fast
     df["rate"] = pd.to_numeric(
         df["rate"].astype(str).str.extract(r"(\d+\.\d+|\d+)")[0], errors="coerce"
     )
-    df["approx_cost(for_two_people)"] = pd.to_numeric(
-        df["approx_cost(for_two_people)"].astype(str).str.replace(r"[^\d.]", "", regex=True),
-        errors="coerce",
-    )
+    if "approx_cost(for_two_people)" in df.columns:
+        df["approx_cost(for_two_people)"] = pd.to_numeric(
+            df["approx_cost(for_two_people)"].astype(str).str.replace(r"[^\d.]", "", regex=True),
+            errors="coerce",
+        )
     return df
 
 @st.cache_data(show_spinner=False)
@@ -143,7 +223,14 @@ def get_cuisine_list(df: pd.DataFrame):
                 cuisines.add(c)
     return sorted(cuisines)
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# ── Ensure dataset is on disk (download if needed), then load ────────────────
+# _ensure_dataset_exists() must run OUTSIDE @st.cache_data so st.spinner works.
+if "_dataset_ready" not in st.session_state:
+    st.session_state["_dataset_ready"] = _ensure_dataset_exists()
+
+if not st.session_state["_dataset_ready"]:
+    st.stop()
+
 df = load_data()
 ALL_LOCATIONS = get_locations(df)
 ALL_CUISINES  = get_cuisine_list(df)
@@ -215,8 +302,8 @@ with col_brand:
 
 if df.empty:
     st.error(
-        "⚠️ Dataset not found. Please run **Phase 1** to generate "
-        f"`data/processed/processed_zomato.csv` (expected at `{DATA_PATH}`)."
+        "⚠️ Dataset loaded but appears empty — the CSV may be corrupt. "
+        "Try clearing the cache or re-deploying."
     )
     st.stop()
 

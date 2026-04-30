@@ -7,3 +7,5 @@ pandas>=2.0.0
 numpy>=1.26.0
 groq>=0.9.0
 python-dotenv>=1.0.0
+datasets>=2.14.0
+pyarrow>=14.0.0
